@@ -8,10 +8,6 @@ on:
       opencode_version:
         description: "指定版本（留空 = 自动按版本号取上游最新稳定版）"
         default: ""
-      force:
-        description: "强制重建（Dockerfile/工具链变更时勾选）"
-        type: boolean
-        default: false
 
 jobs:
   build:
@@ -47,23 +43,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Skip if version already published
-        id: check
-        run: |
-          if [ "${{ inputs.force }}" != "true" ] \
-             && docker manifest inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "已存在 $IMAGE:$VERSION，跳过构建"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
+      # 每次都强制重建并覆盖 tag（版本号 + latest）
       - uses: docker/build-push-action@v6
-        if: steps.check.outputs.skip != 'true'
         with:
           context: .
           platforms: linux/amd64
           push: true
+          provenance: false   # 不生成 attestation manifest，保证阿里云 ACR 可同步
+          sbom: false
           build-args: OPENCODE_VERSION=${{ env.VERSION }}
           tags: |
             ${{ env.IMAGE }}:${{ env.VERSION }}
