@@ -1,0 +1,72 @@
+name: build-opencode-image
+
+on:
+  schedule:
+    - cron: "0 18 * * *"   # 每天北京时间 02:00 检查上游新版本
+  workflow_dispatch:
+    inputs:
+      opencode_version:
+        description: "指定版本（留空 = 自动按版本号取上游最新稳定版）"
+        default: ""
+      force:
+        description: "强制重建（Dockerfile/工具链变更时勾选）"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest   # amd64
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version & image name
+        run: |
+          VERSION="${{ inputs.opencode_version }}"
+          if [ -z "$VERSION" ]; then
+            VERSION="$(curl -fsSL -H "Authorization: Bearer ${{ github.token }}" \
+              'https://api.github.com/repos/anomalyco/opencode/releases?per_page=100' \
+              | jq -r '
+                  [.[] | select(.draft == false and .prerelease == false) | .tag_name
+                   | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))]
+                  | sort_by(ltrimstr("v") | split(".") | map(tonumber))
+                  | last // error("no stable release found")
+                  | ltrimstr("v")')"
+          fi
+          test -n "$VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/opencode-debian" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip if version already published
+        id: check
+        run: |
+          if [ "${{ inputs.force }}" != "true" ] \
+             && docker manifest inspect "$IMAGE:$VERSION" >/dev/null 2>&1; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "已存在 $IMAGE:$VERSION，跳过构建"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/build-push-action@v6
+        if: steps.check.outputs.skip != 'true'
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: OPENCODE_VERSION=${{ env.VERSION }}
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
