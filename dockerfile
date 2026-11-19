@@ -1,43 +1,49 @@
 FROM --platform=linux/amd64 debian:trixie-slim
 
-# 留空 = 构建时自动取上游最新稳定版（按 semver 取最大，避开 v1 维护线）
 ARG OPENCODE_VERSION=""
+ARG NODE_VERSION=24.11.0
 ARG DEBIAN_FRONTEND=noninteractive
 
-# 与官方镜像一致：关闭 bun 转译缓存
 ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
 
-# 基础工具 + Node 24 LTS（NodeSource，Debian 自带 node 太旧）+ 常用工具链
+# ── 构建期：官方源（GHA 海外 runner 直连最快）──
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl wget gnupg \
- && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
- && apt-get install -y --no-install-recommends \
-      nodejs \
+      ca-certificates curl wget xz-utils \
       git nano jq procps unzip openssl \
       python3 python3-venv python3-pip \
       chromium fonts-liberation fonts-noto-cjk \
       ripgrep libstdc++6 bash tar gzip \
  && rm -rf /var/lib/apt/lists/*
 
-# npm 全局包
+# Node 24 LTS 官方二进制 + sha256 校验
+RUN set -eux; \
+    cd /tmp; \
+    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"; \
+    curl -fsSLO "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt"; \
+    grep "node-v${NODE_VERSION}-linux-x64.tar.xz" SHASUMS256.txt | sha256sum -c -; \
+    tar -xJf "node-v${NODE_VERSION}-linux-x64.tar.xz" -C /usr/local --strip-components=1; \
+    rm -f "node-v${NODE_VERSION}-linux-x64.tar.xz" SHASUMS256.txt; \
+    node --version && npm --version
+
+# pnpm（构建期走 npmjs 官方）
 RUN npm install -g pnpm && npm cache clean --force
 
-# uv / uvx（官方静态二进制，glibc 下可用）
+# uv / uvx（GHA 直连 ghcr 很快）
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
-# 默认 venv：规避 Debian PEP 668 限制，python/pip 开箱即用
+# 默认 venv（规避 PEP 668）
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:${PATH}" \
     CHROME_BIN=/usr/bin/chromium \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
 
-# 无头 chromium 包装（容器 root 必须 --no-sandbox）；git 放行挂载目录
+# 无头 chromium 包装（root 需 --no-sandbox）；git 放行挂载目录
 RUN printf '#!/bin/sh\nexec /usr/bin/chromium --headless=new --no-sandbox --disable-gpu "$@"\n' \
       > /usr/local/bin/chromium-headless \
  && chmod +x /usr/local/bin/chromium-headless \
  && git config --system --add safe.directory '*'
 
-# opencode glibc baseline 二进制（amd64，兼容 J4125 等无 AVX2 CPU）+ sha256 校验
+# opencode glibc baseline（amd64）+ sha256 校验；版本自动取 semver 最大
 RUN set -eux; \
     cd /tmp; \
     if [ -z "$OPENCODE_VERSION" ]; then \
@@ -60,6 +66,16 @@ RUN set -eux; \
     ln -s opencode /usr/local/bin/opencode2; \
     rm -f opencode-linux-x64-baseline.tar.gz SHA256SUMS; \
     opencode --version
+
+# ── 运行期：切国内源（容器在国内使用，agent 装包/apt 都走国内）──
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
+      /etc/apt/sources.list.d/debian.sources \
+ && npm config set registry https://registry.npmmirror.com --location=global
+
+ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
+    COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
+    PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+    UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 
 WORKDIR /workspace
 ENTRYPOINT ["opencode"]
