@@ -1,0 +1,25 @@
+services:
+  opencode:
+    image: ghcr.io/<你的GitHub用户名小写>/opencode-debian:latest
+    container_name: opencode
+    restart: unless-stopped
+    init: true   # 回收 agent 派生的子进程，避免僵尸进程
+    command: ["serve", "--hostname", "0.0.0.0", "--port", "4096"]
+    working_dir: /workspace
+    ports:
+      - "4096:4096"
+    environment:
+      # Web/API 登录密码，务必修改；Basic auth 用户名固定为 opencode
+      OPENCODE_PASSWORD: "change-me-to-a-long-secret"
+      # 模型 API Key 也可在此注入（与 auth login 二选一）
+      # ANTHROPIC_API_KEY: "sk-ant-xxx"
+      # OPENAI_API_KEY: "sk-xxx"
+    volumes:
+      - ./data:/root/.local/share/opencode    # 会话数据库、auth.json 凭据、日志
+      - ./config:/root/.config/opencode       # opencode.json 全局配置
+      - ./workspace:/workspace                # 代码项目目录
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -u opencode:$$OPENCODE_PASSWORD http://127.0.0.1:4096/api/info >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
