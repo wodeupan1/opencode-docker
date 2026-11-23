@@ -14,6 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3 python3-venv python3-pip \
         fonts-liberation fonts-noto-cjk \
         ripgrep libstdc++6 bash tar gzip \
+        build-essential \
+        openssh-client \
+        tree zip patch file \
+        iproute2 dnsutils \
+        sqlite3 \
+        gh \
     && rm -rf /var/lib/apt/lists/*
 
 # Node 24 LTS 官方二进制 + sha256 校验
