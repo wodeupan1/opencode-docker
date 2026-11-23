@@ -7,13 +7,14 @@ ARG DEBIAN_FRONTEND=noninteractive
 ENV BUN_RUNTIME_TRANSPILER_CACHE_PATH=0
 
 # ── 构建期：官方源（GHA 海外 runner 直连最快）──
+# 注意：不再装系统 chromium，改由 Playwright 自带
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl wget xz-utils \
-      git nano jq procps unzip openssl \
-      python3 python3-venv python3-pip \
-      chromium fonts-liberation fonts-noto-cjk \
-      ripgrep libstdc++6 bash tar gzip \
- && rm -rf /var/lib/apt/lists/*
+        ca-certificates curl wget xz-utils \
+        git nano jq procps unzip openssl \
+        python3 python3-venv python3-pip \
+        fonts-liberation fonts-noto-cjk \
+        ripgrep libstdc++6 bash tar gzip \
+    && rm -rf /var/lib/apt/lists/*
 
 # Node 24 LTS 官方二进制 + sha256 校验
 RUN set -eux; \
@@ -33,27 +34,32 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 # 默认 venv（规避 PEP 668）
 RUN python3 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:${PATH}" \
-    CHROME_BIN=/usr/bin/chromium \
-    PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PATH="/opt/venv/bin:${PATH}"
 
-# 无头 chromium 包装（root 需 --no-sandbox）；git 放行挂载目录
-RUN printf '#!/bin/sh\nexec /usr/bin/chromium --headless=new --no-sandbox --disable-gpu "$@"\n' \
-      > /usr/local/bin/chromium-headless \
- && chmod +x /usr/local/bin/chromium-headless \
- && git config --system --add safe.directory '*'
+# ── Playwright：自带 chromium（构建期直连官方浏览器 CDN）──
+# --with-deps 会自动 apt 装齐 libnss3/libgbm 等运行库，必须放在切国内源之前
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN npm install -g playwright @playwright/test @playwright/mcp \
+    && playwright install --with-deps chromium \
+    && chmod -R a+rX /opt/ms-playwright \
+    && npm cache clean --force
+# 让任意目录下的脚本都能 require('playwright')（全局安装）
+ENV NODE_PATH=/usr/local/lib/node_modules
+
+# git 放行挂载目录
+RUN git config --system --add safe.directory '*'
 
 # opencode glibc baseline（amd64）+ sha256 校验；版本自动取 semver 最大
 RUN set -eux; \
     cd /tmp; \
     if [ -z "$OPENCODE_VERSION" ]; then \
-      OPENCODE_VERSION="$(curl -fsSL 'https://api.github.com/repos/anomalyco/opencode/releases?per_page=100' \
-        | jq -r ' \
-            [.[] | select(.draft == false and .prerelease == false) | .tag_name \
-             | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] \
-            | sort_by(ltrimstr("v") | split(".") | map(tonumber)) \
-            | last // error("no stable release found") \
-            | ltrimstr("v")')"; \
+        OPENCODE_VERSION="$(curl -fsSL 'https://api.github.com/repos/anomalyco/opencode/releases?per_page=100' \
+            | jq -r ' \
+                [.[] | select(.draft == false and .prerelease == false) | .tag_name \
+                 | select(test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))] \
+                | sort_by(ltrimstr("v") | split(".") | map(tonumber)) \
+                | last // error("no stable release found") \
+                | ltrimstr("v")')"; \
     fi; \
     test -n "$OPENCODE_VERSION"; \
     echo "building opencode v${OPENCODE_VERSION}"; \
@@ -69,13 +75,16 @@ RUN set -eux; \
 
 # ── 运行期：切国内源（容器在国内使用，agent 装包/apt 都走国内）──
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' \
-      /etc/apt/sources.list.d/debian.sources \
- && npm config set registry https://registry.npmmirror.com --location=global
+        /etc/apt/sources.list.d/debian.sources \
+    && npm config set registry https://registry.npmmirror.com --location=global
 
 ENV NPM_CONFIG_REGISTRY=https://registry.npmmirror.com \
     COREPACK_NPM_REGISTRY=https://registry.npmmirror.com \
     PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
-    UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+    UV_DEFAULT_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright \
+    PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright \
+    PUPPETEER_SKIP_DOWNLOAD=true
 
 WORKDIR /workspace
 ENTRYPOINT ["opencode"]
